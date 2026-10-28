@@ -11,6 +11,8 @@ import org.yuktisetu.instituteservice.exception.InstituteExceptions;
 import org.yuktisetu.instituteservice.policy.InstituteHierarchyPolicy;
 import org.yuktisetu.core.security.UserPrincipal;
 import org.yuktisetu.institute.db.College;
+import org.yuktisetu.institute.db.Degree;
+import org.yuktisetu.institute.repository.DegreeRepository;
 import org.yuktisetu.institute.db.Department;
 import org.yuktisetu.institute.model.TenantStatus;
 import org.yuktisetu.institute.repository.CollegeRepository;
@@ -26,6 +28,7 @@ public class DepartmentService {
 
     private final DepartmentRepository departmentRepository;
     private final CollegeRepository collegeRepository;
+    private final DegreeRepository degreeRepository;
     private final InstituteHierarchyPolicy policy;
     private final InstituteDependencyGuard dependencyGuard;
 
@@ -51,8 +54,11 @@ public class DepartmentService {
             throw new InstituteExceptions.DuplicateCodeException("Department", code);
         }
 
+        Degree degree = requireOfferedDegree(college, req.degreeId());
+
         Department department = new Department();
         department.setCollege(college);
+        department.setDegree(degree);
         department.setName(req.name().trim());
         department.setCode(code);
         department.setStatus(TenantStatus.ACTIVE);
@@ -64,15 +70,18 @@ public class DepartmentService {
         return toResponse(saved);
     }
 
+    @Transactional(readOnly = true)
     public List<DepartmentResponse> listActiveForCollege(Long collegeId) {
         return departmentRepository.findByCollegeIdAndIsDeletedFalse(collegeId).stream().map(this::toResponse).toList();
     }
 
     /** The restore screen, scoped to one college. */
+    @Transactional(readOnly = true)
     public List<DepartmentResponse> listDeletedForCollege(Long collegeId) {
         return departmentRepository.findByCollegeIdAndIsDeletedTrue(collegeId).stream().map(this::toResponse).toList();
     }
 
+    @Transactional(readOnly = true)
     public DepartmentResponse get(Long id) {
         Department department = departmentRepository.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new InstituteExceptions.NotFoundException("Department", id));
@@ -94,6 +103,7 @@ public class DepartmentService {
             throw new InstituteExceptions.DuplicateCodeException("Department", code);
         }
 
+        changeDegree(department, req.degreeId());
         department.setName(req.name().trim());
         department.setCode(code);
         department.setUpdatedBy(actor.userId());
@@ -133,6 +143,10 @@ public class DepartmentService {
                 throw new InstituteExceptions.DuplicateCodeException("Department", code);
             }
             department.setCode(code);
+        }
+
+        if (req.degreeId() != null) {
+            changeDegree(department, req.degreeId());
         }
 
         department.setUpdatedBy(actor.userId());
@@ -223,10 +237,46 @@ public class DepartmentService {
         log.info("Hard-deleted department id={} code={} actorId={}", department.getId(), department.getCode(), actor.userId());
     }
 
+    /** The degree must exist, be ACTIVE, and be one the department's college actually offers. */
+    private Degree requireOfferedDegree(College college, Long degreeId) {
+        Degree degree = degreeRepository.findByIdAndIsDeletedFalse(degreeId)
+                .orElseThrow(() -> new InstituteExceptions.NotFoundException("Degree", degreeId));
+        if (degree.getStatus() != TenantStatus.ACTIVE) {
+            throw new InstituteExceptions.InvalidRequestException(
+                    "Degree " + degree.getName() + " is inactive and cannot be assigned to a department.");
+        }
+        boolean offered = college.getDegrees().stream().anyMatch(d -> d.getId().equals(degreeId));
+        if (!offered) {
+            throw new InstituteExceptions.InvalidRequestException(
+                    college.getName() + " does not offer " + degree.getName()
+                            + ". Add it to the college's degrees first.");
+        }
+        return degree;
+    }
+
+    /**
+     * A department's degree is a fact its students and drive targets were built on,
+     * so it can only change while nothing live points at the department.
+     */
+    private void changeDegree(Department department, Long newDegreeId) {
+        if (newDegreeId == null || newDegreeId.equals(department.getDegree().getId())) {
+            return;
+        }
+        var blockers = dependencyGuard.forDepartment(department.getId());
+        if (!blockers.isEmpty()) {
+            throw new InstituteExceptions.InvalidRequestException(
+                    "The degree of " + department.getName() + " cannot change while "
+                            + InstituteDependencyGuard.describe(blockers)
+                            + " still belong to it. Create a new department for the other degree instead.");
+        }
+        department.setDegree(requireOfferedDegree(department.getCollege(), newDegreeId));
+    }
+
     private DepartmentResponse toResponse(Department d) {
         return new DepartmentResponse(
                 d.getId(), d.getCollege().getId(), d.getName(), d.getCode(),
-                d.getStatus(), d.getCreatedAt(), d.getUpdatedAt()
+                d.getStatus(), d.getCreatedAt(), d.getUpdatedAt(),
+                d.getDegree().getId(), d.getDegree().getCode(), d.getDegree().getName()
         );
     }
 }

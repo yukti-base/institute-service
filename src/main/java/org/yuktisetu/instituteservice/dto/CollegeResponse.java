@@ -16,5 +16,6 @@ public record CollegeResponse(
         String primaryContactPhone,
         TenantStatus status,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        java.util.List<DegreeSummary> degrees
 ) {}

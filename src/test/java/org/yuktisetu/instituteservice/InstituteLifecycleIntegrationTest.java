@@ -9,6 +9,10 @@ import org.springframework.test.context.ActiveProfiles;
 import org.yuktisetu.core.exception.ApiException;
 import org.yuktisetu.core.security.UserPrincipal;
 import org.yuktisetu.institute.db.College;
+import org.yuktisetu.institute.db.Degree;
+import org.yuktisetu.institute.repository.DegreeRepository;
+import org.yuktisetu.instituteservice.dto.CollegeDegreesRequest;
+import org.yuktisetu.instituteservice.dto.DepartmentRequest;
 import org.yuktisetu.institute.db.Department;
 import org.yuktisetu.institute.db.Trust;
 import org.yuktisetu.institute.model.TenantStatus;
@@ -57,6 +61,7 @@ class InstituteLifecycleIntegrationTest {
     @Autowired TrustRepository trustRepository;
     @Autowired CollegeRepository collegeRepository;
     @Autowired DepartmentRepository departmentRepository;
+    @Autowired DegreeRepository degreeRepository;
     @Autowired JdbcTemplate jdbc;
 
     private static final AtomicInteger SEQ = new AtomicInteger();
@@ -107,6 +112,7 @@ class InstituteLifecycleIntegrationTest {
         c.setPrimaryContactName("Principal");
         c.setPrimaryContactEmail("principal@example.test");
         c.setPrimaryContactPhone("9876543210");
+        c.getDegrees().add(btech());
         return collegeRepository.save(c);
     }
 
@@ -115,8 +121,34 @@ class InstituteLifecycleIntegrationTest {
         d.setCollege(college);
         d.setName("Computer Engineering");
         d.setCode(code("DP"));
+        d.setDegree(btech());
         d.setStatus(TenantStatus.ACTIVE);
         return departmentRepository.save(d);
+    }
+
+    /** The catalogue is seeded on startup; fall back to creating it so the test never depends on that. */
+    private Degree btech() {
+        return degreeRepository.findByIsDeletedFalseOrderByNameAsc().stream()
+                .filter(d -> d.getCode().equals("BTECH")).findFirst()
+                .orElseGet(() -> {
+                    Degree d = new Degree();
+                    d.setCode("BTECH");
+                    d.setName("B.Tech");
+                    d.setStatus(TenantStatus.ACTIVE);
+                    return degreeRepository.save(d);
+                });
+    }
+
+    private Degree anotherDegree(String code) {
+        return degreeRepository.findByIsDeletedFalseOrderByNameAsc().stream()
+                .filter(d -> d.getCode().equals(code)).findFirst()
+                .orElseGet(() -> {
+                    Degree d = new Degree();
+                    d.setCode(code);
+                    d.setName(code);
+                    d.setStatus(TenantStatus.ACTIVE);
+                    return degreeRepository.save(d);
+                });
     }
 
     // ------------------------------------------------------------ PATCH
@@ -213,7 +245,7 @@ class InstituteLifecycleIntegrationTest {
     void departmentPatchRenames() {
         Department dept = aDepartment(aCollege(aTrust()));
 
-        departmentService.patch(ADMIN, dept.getId(), new DepartmentPatchRequest("Information Technology", null));
+        departmentService.patch(ADMIN, dept.getId(), new DepartmentPatchRequest("Information Technology", null, null));
 
         Department after = departmentRepository.findById(dept.getId()).orElseThrow();
         assertEquals("Information Technology", after.getName());
@@ -547,5 +579,59 @@ class InstituteLifecycleIntegrationTest {
         departmentService.softDelete(ADMIN, dept.getId());
         collegeService.softDelete(SUPER_ADMIN, college.getId());
         assertDoesNotThrow(() -> collegeService.restore(SUPER_ADMIN, college.getId()));
+    }
+
+    // ------------------------------------------------------------ degrees
+
+    @Test
+    @DisplayName("a department can only take a degree its college offers")
+    void departmentDegreeMustBeOfferedByTheCollege() {
+        College college = aCollege(aTrust());          // offers B.Tech only
+        Degree mca = anotherDegree("MCA");
+
+        var ex = assertThrows(RuntimeException.class, () -> departmentService.create(ADMIN,
+                new DepartmentRequest(college.getId(), "Applications", code("AP"), mca.getId())));
+        assertTrue(ex.getMessage().contains("does not offer"), ex.getMessage());
+
+        var ok = departmentService.create(ADMIN,
+                new DepartmentRequest(college.getId(), "Computer", code("CS"), btech().getId()));
+        assertEquals("BTECH", ok.degreeCode());
+    }
+
+    @Test
+    @DisplayName("a college cannot stop offering a degree one of its departments belongs to")
+    void collegeCannotDropADegreeInUse() {
+        College college = aCollege(aTrust());
+        Degree mca = anotherDegree("MCA");
+        collegeService.setDegrees(ADMIN, college.getId(),
+                new CollegeDegreesRequest(List.of(btech().getId(), mca.getId())));
+        departmentService.create(ADMIN, new DepartmentRequest(college.getId(), "Applications", code("AP"), mca.getId()));
+
+        assertThrows(RuntimeException.class, () -> collegeService.setDegrees(ADMIN, college.getId(),
+                new CollegeDegreesRequest(List.of(btech().getId()))), "MCA is still used by a department");
+
+        // B.Tech is unused by any department here, so dropping it is fine.
+        var after = collegeService.setDegrees(ADMIN, college.getId(),
+                new CollegeDegreesRequest(List.of(mca.getId())));
+        assertEquals(List.of("MCA"), after.degrees().stream().map(d -> d.code()).toList());
+    }
+
+    @Test
+    @DisplayName("a department's degree cannot change once students or drives point at it")
+    void departmentDegreeIsLockedWhileReferenced() {
+        College college = aCollege(aTrust());
+        Degree mca = anotherDegree("MCA");
+        collegeService.setDegrees(ADMIN, college.getId(),
+                new CollegeDegreesRequest(List.of(btech().getId(), mca.getId())));
+        Department dept = aDepartment(college);
+
+        // Free to change while nothing uses it ...
+        departmentService.patch(ADMIN, dept.getId(), new DepartmentPatchRequest(null, null, mca.getId()));
+        assertEquals("MCA", departmentService.get(dept.getId()).degreeCode());
+
+        // ... and locked as soon as a student is assigned to it.
+        jdbc.update("INSERT INTO user_role_assignments (dept_id, is_active) VALUES (?, true)", dept.getId());
+        assertThrows(RuntimeException.class, () -> departmentService.patch(ADMIN, dept.getId(),
+                new DepartmentPatchRequest(null, null, btech().getId())));
     }
 }

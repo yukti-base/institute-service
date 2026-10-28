@@ -11,5 +11,8 @@ public record DepartmentResponse(
         String code,
         TenantStatus status,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        Long degreeId,
+        String degreeCode,
+        String degreeName
 ) {}

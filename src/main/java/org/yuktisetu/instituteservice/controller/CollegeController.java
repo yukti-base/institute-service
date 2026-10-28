@@ -80,6 +80,17 @@ public class CollegeController {
                 collegeService.patch(actor, id, request), "College updated"));
     }
 
+    /** Replace the set of degrees this college offers. */
+    @PutMapping("/{id}/degrees")
+    @PreAuthorize("hasAnyAuthority('ROLE_IT_ADMIN','ROLE_TNP_SUPER_ADMIN')")
+    public ResponseEntity<YuktiSetuResponse<CollegeResponse>> setDegrees(
+            @AuthenticationPrincipal UserPrincipal actor,
+            @PathVariable Long id,
+            @RequestBody @Valid org.yuktisetu.instituteservice.dto.CollegeDegreesRequest request) {
+        return ResponseEntity.ok(YuktiSetuResponse.success(
+                collegeService.setDegrees(actor, id, request), "College degrees updated"));
+    }
+
     @PatchMapping("/{id}/status")
     @PreAuthorize("hasAnyAuthority('ROLE_IT_ADMIN','ROLE_TNP_SUPER_ADMIN')")
     public ResponseEntity<YuktiSetuResponse<CollegeResponse>> setStatus(

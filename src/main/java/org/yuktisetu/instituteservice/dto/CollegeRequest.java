@@ -18,5 +18,6 @@ public record CollegeRequest(
         String address,
         @NotBlank @Size(max = 255) String primaryContactName,
         @NotBlank @Email String primaryContactEmail,
-        String primaryContactPhone
+        String primaryContactPhone,
+        @jakarta.validation.constraints.NotEmpty java.util.List<Long> degreeIds
 ) {}

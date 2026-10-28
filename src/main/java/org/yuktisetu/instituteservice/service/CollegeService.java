@@ -14,7 +14,14 @@ import org.yuktisetu.institute.db.College;
 import org.yuktisetu.institute.db.Trust;
 import org.yuktisetu.institute.model.TenantStatus;
 import org.yuktisetu.institute.repository.CollegeRepository;
+import org.yuktisetu.institute.db.Degree;
+import org.yuktisetu.institute.repository.DegreeRepository;
 import org.yuktisetu.institute.repository.DepartmentRepository;
+import org.yuktisetu.instituteservice.dto.CollegeDegreesRequest;
+import org.yuktisetu.instituteservice.dto.DegreeSummary;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.yuktisetu.institute.repository.TrustRepository;
 
 import java.time.Instant;
@@ -28,6 +35,7 @@ public class CollegeService {
     private final CollegeRepository collegeRepository;
     private final TrustRepository trustRepository;
     private final DepartmentRepository departmentRepository;
+    private final DegreeRepository degreeRepository;
     private final InstituteHierarchyPolicy policy;
     private final InstituteDependencyGuard dependencyGuard;
 
@@ -58,6 +66,7 @@ public class CollegeService {
         college.setPrimaryContactEmail(req.primaryContactEmail());
         college.setPrimaryContactPhone(req.primaryContactPhone());
         college.setStatus(TenantStatus.ACTIVE);
+        college.setDegrees(resolveDegrees(req.degreeIds()));
         college.setCreatedBy(actor.userId());
         college.setUpdatedBy(actor.userId());
 
@@ -73,15 +82,18 @@ public class CollegeService {
         return toResponse(saved);
     }
 
+    @Transactional(readOnly = true)
     public List<CollegeResponse> listActiveForTrust(Long trustId) {
         return collegeRepository.findByTrustIdAndIsDeletedFalse(trustId).stream().map(this::toResponse).toList();
     }
 
     /** The restore screen, scoped to one trust. */
+    @Transactional(readOnly = true)
     public List<CollegeResponse> listDeletedForTrust(Long trustId) {
         return collegeRepository.findByTrustIdAndIsDeletedTrue(trustId).stream().map(this::toResponse).toList();
     }
 
+    @Transactional(readOnly = true)
     public CollegeResponse get(Long id) {
         College college = collegeRepository.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new InstituteExceptions.NotFoundException("College", id));
@@ -110,6 +122,7 @@ public class CollegeService {
         college.setPrimaryContactName(req.primaryContactName().trim());
         college.setPrimaryContactEmail(req.primaryContactEmail());
         college.setPrimaryContactPhone(req.primaryContactPhone());
+        applyDegrees(college, req.degreeIds());
         college.setUpdatedBy(actor.userId());
 
         College saved = collegeRepository.save(college);
@@ -238,11 +251,72 @@ public class CollegeService {
         log.info("Hard-deleted college id={} code={} actorId={}", college.getId(), college.getCode(), actor.userId());
     }
 
+    /**
+     * Replaces the set of degrees a college offers.
+     *
+     * A degree cannot be dropped while anything at this college still uses it --
+     * a department of that degree, a student, or a drive target -- because that
+     * would leave a department whose degree its own college does not offer.
+     */
+    @Transactional
+    public CollegeResponse setDegrees(UserPrincipal actor, Long id, CollegeDegreesRequest req) {
+        if (!policy.canManageCollege(actor)) {
+            throw new InstituteExceptions.InsufficientAuthorityException();
+        }
+        College college = collegeRepository.findByIdAndIsDeletedFalse(id)
+                .orElseThrow(() -> new InstituteExceptions.NotFoundException("College", id));
+
+        applyDegrees(college, req.degreeIds());
+        college.setUpdatedBy(actor.userId());
+        College saved = collegeRepository.save(college);
+        log.info("Set degrees of college id={} actorId={}", id, actor.userId());
+        return toResponse(saved);
+    }
+
+    /** Swaps the college's degrees, refusing to drop one that is still in use at this college. */
+    private void applyDegrees(College college, List<Long> degreeIds) {
+        Long id = college.getId();
+        Set<Degree> next = resolveDegrees(degreeIds);
+        Set<Long> nextIds = next.stream().map(Degree::getId).collect(Collectors.toSet());
+        for (Degree current : college.getDegrees()) {
+            if (!nextIds.contains(current.getId())) {
+                var blockers = dependencyGuard.forCollegeDegree(id, current.getId());
+                if (!blockers.isEmpty()) {
+                    throw new InstituteExceptions.StillReferencedException(
+                            "Degree " + current.getName() + " at " + college.getName(), current.getName(),
+                            InstituteDependencyGuard.describe(blockers));
+                }
+            }
+        }
+
+        college.getDegrees().clear();
+        college.getDegrees().addAll(next);
+    }
+
+    /** Every id must be a live, ACTIVE degree; one bad id rejects the lot rather than silently dropping it. */
+    private Set<Degree> resolveDegrees(List<Long> degreeIds) {
+        if (degreeIds == null || degreeIds.isEmpty()) {
+            throw new InstituteExceptions.InvalidRequestException("A college must offer at least one degree.");
+        }
+        Set<Long> wanted = new LinkedHashSet<>(degreeIds);
+        List<Degree> found = degreeRepository.findByIdInAndIsDeletedFalse(wanted);
+        if (found.size() != wanted.size()
+                || found.stream().anyMatch(d -> d.getStatus() != TenantStatus.ACTIVE)) {
+            throw new InstituteExceptions.InvalidRequestException(
+                    "One or more selected degrees do not exist or are inactive.");
+        }
+        return new LinkedHashSet<>(found);
+    }
+
     private CollegeResponse toResponse(College c) {
         return new CollegeResponse(
                 c.getId(), c.getTrust().getId(), c.getName(), c.getCode(), c.getLogoUrl(),
                 c.getAddress(), c.getPrimaryContactName(), c.getPrimaryContactEmail(),
-                c.getPrimaryContactPhone(), c.getStatus(), c.getCreatedAt(), c.getUpdatedAt()
+                c.getPrimaryContactPhone(), c.getStatus(), c.getCreatedAt(), c.getUpdatedAt(),
+                c.getDegrees().stream()
+                        .sorted(java.util.Comparator.comparing(Degree::getName))
+                        .map(d -> new DegreeSummary(d.getId(), d.getCode(), d.getName()))
+                        .toList()
         );
     }
 }

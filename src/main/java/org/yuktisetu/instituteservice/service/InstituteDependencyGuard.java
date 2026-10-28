@@ -70,6 +70,33 @@ public class InstituteDependencyGuard {
         return blockers;
     }
 
+    /** What still uses a degree, anywhere -- so it cannot be switched off under live data. */
+    public List<Blocker> forDegree(Long degreeId) {
+        List<Blocker> blockers = new ArrayList<>(4);
+        add(blockers, "department",
+                "SELECT count(*) FROM departments WHERE degree_id = ? AND is_deleted = false", degreeId);
+        add(blockers, "active role assignment",
+                "SELECT count(*) FROM user_role_assignments WHERE degree_id = ? AND is_active = true", degreeId);
+        add(blockers, "drive target",
+                "SELECT count(*) FROM posting_targets WHERE degree_id = ? AND is_deleted = false", degreeId);
+        return blockers;
+    }
+
+    /** What still uses this degree AT this college -- checked before the college stops offering it. */
+    public List<Blocker> forCollegeDegree(Long collegeId, Long degreeId) {
+        List<Blocker> blockers = new ArrayList<>(3);
+        add2(blockers, "department",
+                "SELECT count(*) FROM departments WHERE college_id = ? AND degree_id = ? AND is_deleted = false",
+                collegeId, degreeId);
+        add2(blockers, "active role assignment",
+                "SELECT count(*) FROM user_role_assignments WHERE college_id = ? AND degree_id = ? AND is_active = true",
+                collegeId, degreeId);
+        add2(blockers, "drive target",
+                "SELECT count(*) FROM posting_targets WHERE college_id = ? AND degree_id = ? AND is_deleted = false",
+                collegeId, degreeId);
+        return blockers;
+    }
+
     public List<Blocker> forDepartment(Long departmentId) {
         List<Blocker> blockers = new ArrayList<>(2);
         add(blockers, "active role assignment",
@@ -87,6 +114,13 @@ public class InstituteDependencyGuard {
         String head = blockers.subList(0, blockers.size() - 1).stream()
                 .map(Blocker::toString).reduce((a, b) -> a + ", " + b).orElse("");
         return head + " and " + blockers.get(blockers.size() - 1);
+    }
+
+    private void add2(List<Blocker> blockers, String label, String sql, Long a, Long b) {
+        Long count = jdbc.queryForObject(sql, Long.class, a, b);
+        if (count != null && count > 0) {
+            blockers.add(new Blocker(label, count));
+        }
     }
 
     private void add(List<Blocker> blockers, String label, String sql, Long id) {

@@ -7,5 +7,6 @@ import jakarta.validation.constraints.Size;
 public record DepartmentRequest(
         @NotNull Long collegeId,
         @NotBlank @Size(max = 255) String name,
-        @NotBlank @Size(max = 32) String code
+        @NotBlank @Size(max = 32) String code,
+        @NotNull Long degreeId
 ) {}

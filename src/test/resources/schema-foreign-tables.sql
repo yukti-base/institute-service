@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS user_role_assignments (
     id        bigserial PRIMARY KEY,
     college_id bigint,
     dept_id    bigint,
+    degree_id  bigint,
     is_active  boolean NOT NULL DEFAULT true
 );
 
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS posting_targets (
     id            bigserial PRIMARY KEY,
     college_id    bigint,
     department_id bigint,
+    degree_id     bigint,
     is_deleted    boolean NOT NULL DEFAULT false
 );
 
